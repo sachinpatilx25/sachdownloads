@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f1115">
+<title>Video Grabber</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --line: #272c38;
+    --text: #e8eaf0;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --accent-ink: #ffffff;
+    --danger: #ff7b7b;
+    --field: #0f1218;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f5f8;
+      --card: #ffffff;
+      --line: #e1e4ea;
+      --text: #14171f;
+      --muted: #5b6475;
+      --accent: #2f6df6;
+      --danger: #c62828;
+      --field: #f7f8fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lead { margin: 0 0 22px; color: var(--muted); }
+
+  form { display: flex; flex-direction: column; gap: 10px; }
+  input[type="url"], textarea {
+    width: 100%;
+    font: inherit;
+    color: var(--text);
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  input[type="url"]:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  button, .btn {
+    font: inherit;
+    font-weight: 600;
+    min-height: 46px;
+    padding: 0 18px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  button:focus-visible, .btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  #status { min-height: 24px; margin: 16px 2px 4px; color: var(--muted); }
+  #status.err { color: var(--danger); }
+
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+  .item { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+  .top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .badge {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+    padding: 2px 8px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+  }
+  .host { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fname { font-weight: 600; overflow-wrap: anywhere; }
+  .meta { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .actions .primary { flex: 1 1 140px; }
+  .note { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+  .note.err { color: var(--danger); }
+
+  details { margin-top: 26px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 4px 16px; }
+  summary { cursor: pointer; font-weight: 600; padding: 12px 0; min-height: 44px; }
+  details p, details ol { color: var(--muted); font-size: 15px; margin: 0 0 12px; }
+  details ol { padding-left: 20px; }
+  details li { margin-bottom: 6px; }
+  textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; height: 96px; resize: vertical; }
+  .copy-row { display: flex; gap: 8px; margin: 8px 0 16px; }
+
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  @media (min-width: 560px) {
+    form { flex-direction: row; }
+    form button { flex: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Video Grabber</h1>
+  <p class="lead">Paste a link to a video or to a page that has one. Pick a result and save it to your phone.</p>
+
+  <form id="form">
+    <label class="sr" for="link">Video or page link</label>
+    <input id="link" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="https://example.com/watch/123" required>
+    <button class="primary" id="go" type="submit">Find video</button>
+  </form>
+
+  <div id="status" role="status" aria-live="polite"></div>
+  <ul id="results"></ul>
+
+  <details id="helper">
+    <summary>Video not found? Use the page helper</summary>
+    <p>Many sites load their video with JavaScript after the page opens, so it never shows up in the page's code. The helper runs inside the page you are watching and lists every video file it loaded, like the Network tab on a computer.</p>
+    <ol>
+      <li>Copy the helper below.</li>
+      <li>Bookmark any page in your browser, then edit that bookmark and replace its address with the copied helper. Name it "Grab video".</li>
+      <li>Open the page with your video and press play for a few seconds.</li>
+      <li>Tap the address bar, type "Grab video" and choose the bookmark. You will land back here with the video links ready.</li>
+    </ol>
+    <textarea id="helperCode" readonly aria-label="Helper code"></textarea>
+    <div class="copy-row">
+      <button id="copyHelper" type="button">Copy helper</button>
+    </div>
+    <p>Works in Chrome on Android and in Safari on iPhone. Some sites block bookmarks like this.</p>
+  </details>
+
+  <footer>Only save videos you have the right to keep. Protected or encrypted streams (YouTube, Netflix and similar) cannot be saved here.</footer>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var form = document.getElementById('form');
+  var input = document.getElementById('link');
+  var goBtn = document.getElementById('go');
+  var statusEl = document.getElementById('status');
+  var list = document.getElementById('results');
+  var helper = document.getElementById('helper');
+
+  /* ---------- helpers ---------- */
+
+  function setStatus(text, isError) {
+    statusEl.textContent = text || '';
+    statusEl.className = isError ? 'err' : '';
+  }
+
+  function fmtSize(bytes) {
+    if (!bytes) return '';
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+    return (i > 1 ? bytes.toFixed(1) : Math.round(bytes)) + ' ' + units[i];
+  }
+
+  function hostOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+  }
+
+  function isHttp(url) {
+    try { var p = new URL(url).protocol; return p === 'http:' || p === 'https:'; } catch (e) { return false; }
+  }
+
+  function guessType(url) {
+    var path;
+    try { path = new URL(url).pathname.toLowerCase(); } catch (e) { return 'video'; }
+    if (/\.m3u8$/.test(path)) return 'hls';
+    var m = path.match(/\.(mp4|m4v|webm|mov|mkv|ogv|3gp)$/);
+    return m ? m[1] : 'video';
+  }
+
+  function guessName(url) {
+    var seg = '';
+    try { seg = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || ''); } catch (e) {}
+    seg = seg.replace(/[\\/:*?"<>|]+/g, ' ').trim();
+    var type = guessType(url);
+    if (!seg || /^(index|master|playlist|videoplayback)(\.|$)/i.test(seg)) seg = 'video';
+    seg = seg.replace(/\.[a-z0-9]{2,4}$/i, '');
+    return seg + '.' + (type === 'hls' ? 'ts' : (type === 'video' ? 'mp4' : type));
+  }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy') ? resolve() : reject(new Error('copy failed')); }
+      catch (e) { reject(e); }
+      ta.remove();
+    });
+  }
+
+  /* ---------- results ---------- */
+
+  function render(videos, page) {
+    list.textContent = '';
+    videos.forEach(function (v) {
+      var li = el('li', 'item');
+
+      var top = el('div', 'top');
+      top.appendChild(el('span', 'badge', v.type === 'hls' ? 'STREAM' : String(v.type).toUpperCase()));
+      top.appendChild(el('span', 'host', hostOf(v.url)));
+      li.appendChild(top);
+
+      li.appendChild(el('div', 'fname', v.name || guessName(v.url)));
+
+      var metaBits = [];
+      if (v.size) metaBits.push(fmtSize(v.size));
+      if (v.type === 'hls') metaBits.push('Joined from many small parts');
+      if (metaBits.length) li.appendChild(el('div', 'meta', metaBits.join(' · ')));
+
+      var actions = el('div', 'actions');
+      var dl = el('button', 'primary', 'Download');
+      dl.type = 'button';
+      var open = el('a', 'btn', 'Open');
+      open.href = v.url;
+      open.target = '_blank';
+      open.rel = 'noopener noreferrer';
+      var copy = el('button', '', 'Copy link');
+      copy.type = 'button';
+      actions.appendChild(dl);
+      actions.appendChild(open);
+      actions.appendChild(copy);
+      li.appendChild(actions);
+
+      var note = el('p', 'note');
+      note.hidden = true;
+      li.appendChild(note);
+
+      dl.addEventListener('click', function () { startDownload(v, page, dl, note); });
+      copy.addEventListener('click', function () {
+        copyText(v.url).then(function () {
+          copy.textContent = 'Copied';
+          setTimeout(function () { copy.textContent = 'Copy link'; }, 1500);
+        }, function () {
+          showNote(note, 'Could not copy. Long-press the Open button to copy the link.', true);
+        });
+      });
+
+      list.appendChild(li);
+    });
+  }
+
+  function showNote(node, text, isError) {
+    node.hidden = !text;
+    node.textContent = text || '';
+    node.className = 'note' + (isError ? ' err' : '');
+  }
+
+  function startDownload(video, page, button, note) {
+    var params = new URLSearchParams({ url: video.url, name: video.name || guessName(video.url), ref: page || '' });
+    var original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Checking…';
+    showNote(note, '');
+
+    fetch('/api/download?' + params.toString() + '&check=1')
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.data.ok) throw new Error(res.data.error || 'This one could not be downloaded.');
+        var d = res.data;
+        if (d.kind === 'hls') {
+          showNote(note, 'Joining ' + d.segments + ' parts. The download starts when it is ready. Keep this tab open.');
+        } else {
+          showNote(note, d.size ? 'Downloading ' + fmtSize(d.size) + '. Check your browser\'s downloads.' : 'Downloading. Check your browser\'s downloads.');
+        }
+        var a = document.createElement('a');
+        a.href = '/api/download?' + params.toString();
+        a.download = d.filename || '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      })
+      .catch(function (err) { showNote(note, err.message || 'Something went wrong.', true); })
+      .then(function () {
+        button.disabled = false;
+        button.textContent = original;
+      });
+  }
+
+  /* ---------- find videos ---------- */
+
+  function firstLink(text) {
+    var m = String(text).match(/https?:\/\/[^\s"'<>]+/i);
+    return m ? m[0] : String(text).trim();
+  }
+
+  function find(link) {
+    list.textContent = '';
+    setStatus('Looking for videos…');
+    goBtn.disabled = true;
+
+    fetch('/api/extract?url=' + encodeURIComponent(link))
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || 'Something went wrong.');
+        var d = res.data;
+        if (!d.videos.length) {
+          setStatus(d.note || 'No video file was found in that page\'s code. Try the page helper below.', true);
+          if (!d.note) helper.open = true;
+          return;
+        }
+        setStatus(d.videos.length === 1 ? 'Found 1 video.' : 'Found ' + d.videos.length + ' videos.');
+        render(d.videos, d.page);
+      })
+      .catch(function (err) { setStatus(err.message || 'Something went wrong.', true); })
+      .then(function () { goBtn.disabled = false; });
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var link = firstLink(input.value);
+    input.value = link;
+    if (link) find(link);
+  });
+
+  /* ---------- page helper (bookmark) ---------- */
+
+  function pageHelper(site) {
+    var seen = {};
+    var found = [];
+    function push(u) {
+      try { u = new URL(u, location.href).href; } catch (e) { return; }
+      if (!/^https?:/i.test(u) || seen[u]) return;
+      seen[u] = 1;
+      found.push(u);
+    }
+    var ext = /\.(mp4|m4v|webm|mov|mkv|ogv|3gp|m3u8)(?![\w\-\/]|\.\w)/i;
+    var els = document.querySelectorAll('video,source');
+    for (var i = 0; i < els.length; i++) {
+      var u = els[i].currentSrc || els[i].src;
+      if (u && u.indexOf('blob:') !== 0) push(u);
+    }
+    var entries = performance.getEntriesByType('resource');
+    for (var j = 0; j < entries.length; j++) {
+      if (ext.test(entries[j].name)) push(entries[j].name);
+    }
+    if (!found.length) {
+      alert('No video links found yet. Press play for a few seconds, then run this again.');
+      return;
+    }
+    location.href = site + '/#p=' + encodeURIComponent(location.href) + '&v=' + encodeURIComponent(found.slice(0, 25).join('\n'));
+  }
+
+  var code = 'javascript:(' + pageHelper.toString().replace(/\s+/g, ' ') + ')(' + JSON.stringify(location.origin) + ')';
+  var helperCode = document.getElementById('helperCode');
+  helperCode.value = code;
+  helperCode.addEventListener('focus', function () { helperCode.select(); });
+  document.getElementById('copyHelper').addEventListener('click', function (e) {
+    var btn = e.currentTarget;
+    copyText(code).then(function () {
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy helper'; }, 1500);
+    }, function () {
+      helperCode.focus();
+      btn.textContent = 'Select the text and copy it';
+    });
+  });
+
+  /* ---------- arriving from the helper ---------- */
+
+  (function fromHelper() {
+    if (location.hash.length < 3) return;
+    var p = new URLSearchParams(location.hash.slice(1));
+    var raw = p.get('v');
+    if (!raw) return;
+    var page = p.get('p') || '';
+    var urls = raw.split('\n').map(function (s) { return s.trim(); }).filter(isHttp);
+    history.replaceState(null, '', location.pathname + location.search);
+    if (!urls.length) return;
+    var videos = urls.map(function (u) { return { url: u, type: guessType(u), name: guessName(u) }; });
+    setStatus('The helper found ' + videos.length + (videos.length === 1 ? ' video.' : ' videos.'));
+    if (isHttp(page)) input.value = page;
+    render(videos, page);
+  })();
+})();
+</script>
+</body>
+</html>

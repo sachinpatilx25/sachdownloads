@@ -1,0 +1,7 @@
+{
+  "name": "video-grabber",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Paste a link, find the video file on the page, and download it. Works from a phone.",
+  "license": "MIT"
+}
