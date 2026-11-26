@@ -1,7 +1,8 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { pipeline } = require('node:stream');
-const { request, readBody, httpError, sendJson, sendError } = require('../lib/net');
+const { request, readBody, readBuffer, httpError, sendJson, sendError } = require('../lib/net');
 const { parsePlaylist, pickVariant } = require('../lib/hls');
 const { sanitizeName, suggestName } = require('../lib/parse');
 
@@ -9,6 +10,7 @@ const MAX_BYTES = 2 * 1024 ** 3;
 const MAX_SEGMENTS = 4000;
 const PREFETCH = 4;
 const PLAYLIST_LIMIT = 2 * 1024 * 1024;
+const KEY_LIMIT = 256;
 
 const OCTET_TYPES = new Set(['application/octet-stream', 'binary/octet-stream', 'application/mp4', 'application/ogg']);
 const EXT_BY_TYPE = {
@@ -60,8 +62,7 @@ async function loadStream(first, headers) {
     if (playlist.kind !== 'media') throw httpError(422, 'This stream layout is not supported.');
   }
 
-  if (playlist.encrypted) throw httpError(422, 'This stream is encrypted, so it cannot be saved here.');
-  if (playlist.byteRange) throw httpError(422, 'This kind of stream is not supported.');
+  if (playlist.drm) throw httpError(422, 'This stream uses DRM protection and cannot be saved.');
   if (!playlist.endlist) throw httpError(422, 'This is a live stream, so it cannot be saved as a file.');
   if (!playlist.segments.length) throw httpError(422, 'The stream has no video parts to download.');
   if (playlist.segments.length > MAX_SEGMENTS) throw httpError(413, 'This stream is too long to save here.');
@@ -82,7 +83,7 @@ async function makePlan(target, ref, range) {
     const r = new URL(ref);
     if (r.protocol === 'http:' || r.protocol === 'https:') referer = r.href;
   } catch {
-    // no usable page link; fall back to the video's own site
+    // fallback to target origin
   }
 
   const headers = { Referer: referer };
@@ -128,7 +129,9 @@ function sendFile(res, plan, filename) {
   for (const h of ['content-length', 'content-range', 'accept-ranges', 'content-encoding']) {
     if (up.headers[h]) res.setHeader(h, up.headers[h]);
   }
-  pipeline(up, res, () => {});
+  pipeline(up, res, () => {
+    up.destroy();
+  });
 }
 
 function drainOrClose(res) {
@@ -143,7 +146,17 @@ function drainOrClose(res) {
   });
 }
 
-// Joins the parts of a playlist-based video into one file, fetching a few parts ahead.
+function buildIv(ivHex, sequence) {
+  if (ivHex) {
+    const clean = ivHex.replace(/^0x/i, '').padStart(32, '0');
+    return Buffer.from(clean, 'hex');
+  }
+  const buf = Buffer.alloc(16);
+  buf.writeUInt32BE(Math.floor(sequence / 0x100000000), 8);
+  buf.writeUInt32BE(sequence >>> 0, 12);
+  return buf;
+}
+
 async function sendStream(res, plan, filename) {
   let closed = false;
   res.on('close', () => {
@@ -156,18 +169,42 @@ async function sendStream(res, plan, filename) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
 
+  const keyCache = new Map();
+  async function getKey(keyUri) {
+    if (!keyCache.has(keyUri)) {
+      const p = request(keyUri, { headers: plan.headers, timeout: 15000 }).then(async (r) => {
+        if (r.statusCode >= 400) {
+          r.resume();
+          throw httpError(502, 'Could not fetch stream encryption key.');
+        }
+        const buf = await readBuffer(r, KEY_LIMIT);
+        if (buf.length !== 16) throw httpError(422, 'Unsupported key length.');
+        return buf;
+      });
+      keyCache.set(keyUri, p);
+    }
+    return keyCache.get(keyUri);
+  }
+
   const parts = plan.init ? [plan.init, ...plan.segments] : plan.segments;
   const queue = [];
   let next = 0;
+
+  const fetchPart = (part) => {
+    const hdrs = { ...plan.headers };
+    if (part.range) hdrs.Range = `bytes=${part.range[0]}-${part.range[1]}`;
+    const p = request(part.uri, { headers: hdrs, timeout: 30000 });
+    p.catch(() => {});
+    return { part, promise: p };
+  };
+
   const fill = () => {
     while (queue.length < PREFETCH && next < parts.length) {
-      const p = request(parts[next++], { headers: plan.headers, timeout: 30000 });
-      p.catch(() => {});
-      queue.push(p);
+      queue.push(fetchPart(parts[next++]));
     }
   };
   const cleanup = () => {
-    for (const p of queue) p.then((r) => r.destroy()).catch(() => {});
+    for (const item of queue) item.promise.then((r) => r.destroy()).catch(() => {});
     queue.length = 0;
   };
 
@@ -175,18 +212,29 @@ async function sendStream(res, plan, filename) {
     fill();
     while (queue.length) {
       if (closed) return cleanup();
-      const r = await queue.shift();
+      const { part, promise } = queue.shift();
       fill();
+      const r = await promise;
       if (r.statusCode >= 400) {
         r.resume();
         throw httpError(502, 'A part of the video could not be fetched.');
       }
-      for await (const chunk of r) {
-        if (closed) {
-          r.destroy();
-          return cleanup();
+      if (part.key && part.key.method === 'AES-128') {
+        const raw = await readBuffer(r, 64 * 1024 * 1024);
+        const keyBuf = await getKey(part.key.uri);
+        const ivBuf = buildIv(part.key.iv, part.sequence || 0);
+        const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuf, ivBuf);
+        const plain = Buffer.concat([decipher.update(raw), decipher.final()]);
+        if (closed) return cleanup();
+        if (!res.write(plain)) await drainOrClose(res);
+      } else {
+        for await (const chunk of r) {
+          if (closed) {
+            r.destroy();
+            return cleanup();
+          }
+          if (!res.write(chunk)) await drainOrClose(res);
         }
-        if (!res.write(chunk)) await drainOrClose(res);
       }
     }
     res.end();

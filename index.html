@@ -68,7 +68,7 @@
     text-decoration: none;
     cursor: pointer;
   }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
   button:disabled { opacity: 0.6; cursor: default; }
   button:focus-visible, .btn:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -77,7 +77,7 @@
 
   ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
   .item { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
-  .top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
   .badge {
     font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
     padding: 2px 8px; border-radius: 999px;
@@ -112,7 +112,7 @@
 <body>
 <main>
   <h1>Video Grabber</h1>
-  <p class="lead">Paste a link to a video or to a page that has one. Pick a result and save it to your phone.</p>
+  <p class="lead">Paste a link to a video or video page (YouTube, Vimeo, Dailymotion, X, Reddit, direct MP4, HLS). Pick a quality and save.</p>
 
   <form id="form">
     <label class="sr" for="link">Video or page link</label>
@@ -126,21 +126,20 @@
 
   <details id="helper">
     <summary>Video not found? Use the page helper</summary>
-    <p>Many sites load their video with JavaScript after the page opens, so it never shows up in the page's code. The helper runs inside the page you are watching and lists every video file it loaded, like the Network tab on a computer.</p>
+    <p>If a site loads its video dynamically with JavaScript after login or interaction, run this bookmark while watching the video to capture its loaded media URLs.</p>
     <ol>
       <li>Copy the helper below.</li>
-      <li>Bookmark any page in your browser, then edit that bookmark and replace its address with the copied helper. Name it "Grab video".</li>
+      <li>Bookmark any page, edit the bookmark URL, and paste the copied code. Name it "Grab video".</li>
       <li>Open the page with your video and press play for a few seconds.</li>
-      <li>Tap the address bar, type "Grab video" and choose the bookmark. You will land back here with the video links ready.</li>
+      <li>Tap the address bar, type "Grab video", and run the bookmark.</li>
     </ol>
     <textarea id="helperCode" readonly aria-label="Helper code"></textarea>
     <div class="copy-row">
       <button id="copyHelper" type="button">Copy helper</button>
     </div>
-    <p>Works in Chrome on Android and in Safari on iPhone. Some sites block bookmarks like this.</p>
   </details>
 
-  <footer>Only save videos you have the right to keep. Protected or encrypted streams (YouTube, Netflix and similar) cannot be saved here.</footer>
+  <footer>Only save videos you have the right to keep. DRM-protected streams (Netflix, Prime, etc.) cannot be downloaded.</footer>
 </main>
 
 <script>
@@ -153,8 +152,6 @@
   var statusEl = document.getElementById('status');
   var list = document.getElementById('results');
   var helper = document.getElementById('helper');
-
-  /* ---------- helpers ---------- */
 
   function setStatus(text, isError) {
     statusEl.textContent = text || '';
@@ -219,36 +216,52 @@
     });
   }
 
-  /* ---------- results ---------- */
+  function showNote(node, text, isError) {
+    node.hidden = !text;
+    node.textContent = text || '';
+    node.className = 'note' + (isError ? ' err' : '');
+  }
 
   function render(videos, page) {
     list.textContent = '';
     videos.forEach(function (v) {
       var li = el('li', 'item');
-
       var top = el('div', 'top');
-      top.appendChild(el('span', 'badge', v.type === 'hls' ? 'STREAM' : String(v.type).toUpperCase()));
+      var badgeLabel = v.type === 'hls' ? 'STREAM' : String(v.type).toUpperCase();
+      if (v.quality) badgeLabel += ' · ' + v.quality;
+      top.appendChild(el('span', 'badge', badgeLabel));
+      if (v.hasVideo && v.hasAudio === false) top.appendChild(el('span', 'badge', 'VIDEO ONLY'));
+      if (v.hasVideo === false && v.hasAudio) top.appendChild(el('span', 'badge', 'AUDIO ONLY'));
       top.appendChild(el('span', 'host', hostOf(v.url)));
       li.appendChild(top);
 
-      li.appendChild(el('div', 'fname', v.name || guessName(v.url)));
+      var fname = v.name || guessName(v.url);
+      li.appendChild(el('div', 'fname', fname));
 
       var metaBits = [];
       if (v.size) metaBits.push(fmtSize(v.size));
-      if (v.type === 'hls') metaBits.push('Joined from many small parts');
+      if (v.type === 'hls') metaBits.push('HLS playlist joined on download');
       if (metaBits.length) li.appendChild(el('div', 'meta', metaBits.join(' · ')));
 
+      var params = new URLSearchParams({ url: v.url, name: fname, ref: page || '' });
+      var downloadUrl = '/api/download?' + params.toString();
+
       var actions = el('div', 'actions');
-      var dl = el('button', 'primary', 'Download');
-      dl.type = 'button';
-      var open = el('a', 'btn', 'Open');
-      open.href = v.url;
-      open.target = '_blank';
-      open.rel = 'noopener noreferrer';
+      var dl = el('a', 'btn primary', 'Download');
+      dl.href = downloadUrl;
+      dl.download = fname;
+      actions.appendChild(dl);
+
+      if (v.directSafe) {
+        var open = el('a', 'btn', 'Direct');
+        open.href = v.url;
+        open.target = '_blank';
+        open.rel = 'noopener noreferrer';
+        actions.appendChild(open);
+      }
+
       var copy = el('button', '', 'Copy link');
       copy.type = 'button';
-      actions.appendChild(dl);
-      actions.appendChild(open);
       actions.appendChild(copy);
       li.appendChild(actions);
 
@@ -256,58 +269,22 @@
       note.hidden = true;
       li.appendChild(note);
 
-      dl.addEventListener('click', function () { startDownload(v, page, dl, note); });
+      dl.addEventListener('click', function () {
+        showNote(note, v.type === 'hls' ? 'Joining stream parts. Download starts immediately.' : 'Downloading via server...');
+      });
+
       copy.addEventListener('click', function () {
         copyText(v.url).then(function () {
           copy.textContent = 'Copied';
           setTimeout(function () { copy.textContent = 'Copy link'; }, 1500);
         }, function () {
-          showNote(note, 'Could not copy. Long-press the Open button to copy the link.', true);
+          showNote(note, 'Could not copy link.', true);
         });
       });
 
       list.appendChild(li);
     });
   }
-
-  function showNote(node, text, isError) {
-    node.hidden = !text;
-    node.textContent = text || '';
-    node.className = 'note' + (isError ? ' err' : '');
-  }
-
-  function startDownload(video, page, button, note) {
-    var params = new URLSearchParams({ url: video.url, name: video.name || guessName(video.url), ref: page || '' });
-    var original = button.textContent;
-    button.disabled = true;
-    button.textContent = 'Checking…';
-    showNote(note, '');
-
-    fetch('/api/download?' + params.toString() + '&check=1')
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
-      .then(function (res) {
-        if (!res.ok || !res.data.ok) throw new Error(res.data.error || 'This one could not be downloaded.');
-        var d = res.data;
-        if (d.kind === 'hls') {
-          showNote(note, 'Joining ' + d.segments + ' parts. The download starts when it is ready. Keep this tab open.');
-        } else {
-          showNote(note, d.size ? 'Downloading ' + fmtSize(d.size) + '. Check your browser\'s downloads.' : 'Downloading. Check your browser\'s downloads.');
-        }
-        var a = document.createElement('a');
-        a.href = '/api/download?' + params.toString();
-        a.download = d.filename || '';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      })
-      .catch(function (err) { showNote(note, err.message || 'Something went wrong.', true); })
-      .then(function () {
-        button.disabled = false;
-        button.textContent = original;
-      });
-  }
-
-  /* ---------- find videos ---------- */
 
   function firstLink(text) {
     var m = String(text).match(/https?:\/\/[^\s"'<>]+/i);
@@ -316,7 +293,7 @@
 
   function find(link) {
     list.textContent = '';
-    setStatus('Looking for videos…');
+    setStatus('Looking for videos...');
     goBtn.disabled = true;
 
     fetch('/api/extract?url=' + encodeURIComponent(link))
@@ -325,7 +302,7 @@
         if (!res.ok) throw new Error(res.data.error || 'Something went wrong.');
         var d = res.data;
         if (!d.videos.length) {
-          setStatus(d.note || 'No video file was found in that page\'s code. Try the page helper below.', true);
+          setStatus(d.note || 'No video file was found on that page. Try the page helper below.', true);
           if (!d.note) helper.open = true;
           return;
         }
@@ -343,8 +320,6 @@
     if (link) find(link);
   });
 
-  /* ---------- page helper (bookmark) ---------- */
-
   function pageHelper(site) {
     var seen = {};
     var found = [];
@@ -354,12 +329,19 @@
       seen[u] = 1;
       found.push(u);
     }
-    var ext = /\.(mp4|m4v|webm|mov|mkv|ogv|3gp|m3u8)(?![\w\-\/]|\.\w)/i;
-    var els = document.querySelectorAll('video,source');
-    for (var i = 0; i < els.length; i++) {
-      var u = els[i].currentSrc || els[i].src;
-      if (u && u.indexOf('blob:') !== 0) push(u);
+    function scanDoc(doc) {
+      var els = doc.querySelectorAll('video,source');
+      for (var i = 0; i < els.length; i++) {
+        var u = els[i].currentSrc || els[i].src;
+        if (u && u.indexOf('blob:') !== 0) push(u);
+      }
     }
+    scanDoc(document);
+    var iframes = document.querySelectorAll('iframe');
+    for (var k = 0; k < iframes.length; k++) {
+      try { if (iframes[k].contentDocument) scanDoc(iframes[k].contentDocument); } catch (e) {}
+    }
+    var ext = /(\.(mp4|m4v|webm|mov|mkv|ogv|3gp|m3u8)(?![\w\-\/]|\.\w)|videoplayback|mime=video)/i;
     var entries = performance.getEntriesByType('resource');
     for (var j = 0; j < entries.length; j++) {
       if (ext.test(entries[j].name)) push(entries[j].name);
@@ -386,8 +368,6 @@
     });
   });
 
-  /* ---------- arriving from the helper ---------- */
-
   (function fromHelper() {
     if (location.hash.length < 3) return;
     var p = new URLSearchParams(location.hash.slice(1));
@@ -397,7 +377,10 @@
     var urls = raw.split('\n').map(function (s) { return s.trim(); }).filter(isHttp);
     history.replaceState(null, '', location.pathname + location.search);
     if (!urls.length) return;
-    var videos = urls.map(function (u) { return { url: u, type: guessType(u), name: guessName(u) }; });
+    var videos = urls.map(function (u) {
+      var t = guessType(u);
+      return { url: u, type: t, name: guessName(u), hasVideo: true, hasAudio: true, directSafe: t !== 'hls' };
+    });
     setStatus('The helper found ' + videos.length + (videos.length === 1 ? ' video.' : ' videos.'));
     if (isHttp(page)) input.value = page;
     render(videos, page);
